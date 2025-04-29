@@ -3,9 +3,21 @@
 <package format="3">
   <name>ur_controller_test</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="k.yavuzkurt1@gmail.com">kayeka</maintainer>
-  <license>TODO: License declaration</license>
+  <description>Testing functions for understanding limits of the Universal Robots supported ROS2 controllers.</description>
+  <maintainer email="k.yavuzkurt1@gmail.com">Kadir Yavuz Kurt</maintainer>
+  <license>MIT</license>
+  
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>rcl_interfaces</depend>
+  <exec_depend>python3-pyqt5</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-matplotlib</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

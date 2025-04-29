@@ -1,4 +1,6 @@
 from setuptools import find_packages, setup
+import os
+from glob import glob
 
 package_name = 'ur_controller_test'
 
@@ -10,6 +12,12 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        # Include all launch files
+        (os.path.join('share', package_name, 'launch'), 
+         glob(os.path.join('launch', '*.launch.py'))),
+        # Include logo and other resources
+        (os.path.join('share', package_name, 'resource'),
+         glob(os.path.join('resource', '*.png'))),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -21,7 +29,7 @@ setup(
     entry_points={
         'console_scripts': [
             'jtc_controller_test = ur_controller_test.jtc_controller_test:main',
-
+            'controller_gui = ur_controller_test.controller_gui:main',
         ],
     },
 )

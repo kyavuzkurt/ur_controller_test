@@ -70,6 +70,24 @@ class JointTrajectoryControllerTest(Node):
         self.current_joint_velocities = None
         self.current_joint_efforts = None
         
+        # For tracking test duration with wall time (more reliable with simulation)
+        self.wall_start_time = None
+        self.use_wall_time_for_duration = False
+        
+        # Declare simulation parameters
+        try:
+            self.declare_parameter(
+                'use_sim_time',
+                False,
+                ParameterDescriptor(
+                    description='Whether to use simulation time'
+                )
+            )
+            self.get_logger().debug('Declared use_sim_time parameter')
+        except rclpy.exceptions.ParameterAlreadyDeclaredException:
+            # Parameter already declared when launched with --use-sim-time
+            self.get_logger().debug('use_sim_time parameter already declared')
+        
         # Declare parameters with descriptions and constraints
         self.declare_parameter(
             'control_mode', 
@@ -171,12 +189,7 @@ class JointTrajectoryControllerTest(Node):
             'waypoints_per_trajectory', 
             5,
             ParameterDescriptor(
-                description='Number of waypoints per trajectory',
-                integer_range=[rclpy.parameter.IntegerRange(
-                    from_value=1,
-                    to_value=50,
-                    step=1
-                )]
+                description='Number of waypoints per trajectory'
             )
         )
         
@@ -196,7 +209,16 @@ class JointTrajectoryControllerTest(Node):
             )
         )
         
-        # Get parameters
+        # Get parameters - must get use_sim_time even if declaration failed
+        try:
+            self.use_sim_time = self.get_parameter('use_sim_time').value
+        except Exception as e:
+            self.get_logger().warning(f'Error getting use_sim_time parameter: {str(e)}. Defaulting to False.')
+            self.use_sim_time = False
+        
+        # When in simulation mode, use wall time for duration tracking to avoid issues
+        self.use_wall_time_for_duration = self.use_sim_time
+        
         self.control_mode = ControlMode(self.get_parameter('control_mode').value)
         self.waveform_type = WaveformType(self.get_parameter('waveform_type').value)
         self.frequency = self.get_parameter('frequency').value
@@ -239,6 +261,8 @@ class JointTrajectoryControllerTest(Node):
         self.timer = self.create_timer(1.0 / self.publish_rate, self.timer_callback)
         
         self.get_logger().info('Joint Trajectory Controller Test node initialized')
+        if self.use_sim_time:
+            self.get_logger().info('Using simulation time')
         self.log_parameters()
     
     def log_parameters(self):
@@ -254,11 +278,16 @@ class JointTrajectoryControllerTest(Node):
         self.get_logger().info(f'Waypoints per trajectory: {self.waypoints_per_trajectory}')
         self.get_logger().info(f'Home position: {self.home_position}')
         self.get_logger().info(f'Return to home on shutdown: {self.return_to_home_on_shutdown}')
+        self.get_logger().info(f'Use simulation time: {self.use_sim_time}')
     
     def parameters_callback(self, params):
         """Handle parameter changes at runtime."""
         for param in params:
-            if param.name == 'control_mode':
+            if param.name == 'use_sim_time':
+                self.use_sim_time = param.value
+                self.get_logger().info(f'Use simulation time updated to: {self.use_sim_time}')
+            
+            elif param.name == 'control_mode':
                 try:
                     self.control_mode = ControlMode(param.value)
                     self.get_logger().info(f'Control mode updated to: {self.control_mode.value}')
@@ -314,6 +343,11 @@ class JointTrajectoryControllerTest(Node):
         
         return rclpy.parameter.SetParametersResult(successful=True)
     
+    def get_current_time(self):
+        """Get current time, respecting simulation time if enabled."""
+        now = self.get_clock().now()
+        return now.nanoseconds / 1e9
+    
     def joint_states_callback(self, msg):
         """Process joint state messages and update current joint states."""
         try:
@@ -333,7 +367,10 @@ class JointTrajectoryControllerTest(Node):
             
             # Start test when we receive joint states if not already started
             if not self.test_running and self.current_joint_positions and not self.shutdown_initiated:
-                self.start_time = self.get_clock().now().nanoseconds / 1e9
+                self.start_time = self.get_current_time()
+                if self.use_wall_time_for_duration:
+                    self.wall_start_time = time.time()
+                    self.get_logger().info('Using wall time for duration tracking (simulation mode)')
                 self.test_running = True
                 self.get_logger().info('Test started')
         
@@ -644,7 +681,7 @@ class JointTrajectoryControllerTest(Node):
         
         # Wait for trajectory to be executed (with timeout)
         timeout = trajectory_time + 1.0  # Add 1 second buffer
-        start_time = time.time()
+        start_time = time.time()  # Use wall time for timeout
         
         while time.time() - start_time < timeout:
             # Process any pending callbacks to receive joint state updates
@@ -690,11 +727,25 @@ class JointTrajectoryControllerTest(Node):
         if not self.test_running or not self.current_joint_positions:
             return
         
-        current_time = self.get_clock().now().nanoseconds / 1e9
+        current_time = self.get_current_time()
         self.elapsed_time = current_time - self.start_time
         
-        # Check if test duration has elapsed
+        # Check if test duration has elapsed using appropriate time source
+        duration_exceeded = False
+        
+        # First check normal elapsed time (based on ROS clock which might be simulation time)
         if self.elapsed_time > self.duration:
+            duration_exceeded = True
+            self.get_logger().info(f'Test duration exceeded using ROS time: {self.elapsed_time:.1f} > {self.duration:.1f}s')
+        
+        # Also check wall time if in simulation mode for more reliable duration tracking
+        if not duration_exceeded and self.use_wall_time_for_duration and self.wall_start_time is not None:
+            wall_elapsed = time.time() - self.wall_start_time
+            if wall_elapsed > self.duration:
+                duration_exceeded = True
+                self.get_logger().info(f'Test duration exceeded using wall time: {wall_elapsed:.1f} > {self.duration:.1f}s')
+        
+        if duration_exceeded:
             if self.test_running:
                 self.get_logger().info('Test completed')
                 self.test_running = False
@@ -732,7 +783,7 @@ def signal_handler(sig, frame):
 
 
 def main(args=None):
-    global jtc_controller_test_node
+    global controller_test_node  # Use controller_test_node to match the variable used in signal_handler
     
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
@@ -741,7 +792,7 @@ def main(args=None):
     rclpy.init(args=args)
     
     try:
-        jtc_controller_test_node = JointTrajectoryControllerTest()
+        controller_test_node = JointTrajectoryControllerTest()  # Assign to controller_test_node
         
         try:
             rclpy.spin(controller_test_node)
