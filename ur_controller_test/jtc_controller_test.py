@@ -14,21 +14,15 @@ from rclpy.parameter import Parameter
 from builtin_interfaces.msg import Duration
 from enum import Enum
 
+# Import our wave generator module
+from ur_controller_test.wave_generators import WaveformType, get_wave_generator
+
 
 class ControlMode(Enum):
     """Enumeration of available control modes."""
     POSITION = 'position'
     VELOCITY = 'velocity'
     ACCELERATION = 'acceleration'
-
-
-class WaveformType(Enum):
-    """Enumeration of available test waveform patterns."""
-    SINE = 'sine'
-    SQUARE = 'square'
-    TRIANGLE = 'triangle'
-    STEP = 'step'
-    CHIRP = 'chirp'
 
 
 class JointTrajectoryControllerTest(Node):
@@ -61,6 +55,9 @@ class JointTrajectoryControllerTest(Node):
             (-2*math.pi, 2*math.pi),  # wrist_2_joint
             (-2*math.pi, 2*math.pi),  # wrist_3_joint
         ]
+        
+        # Set up wave generator
+        self.wave_generator = None
         
         # Define home position (neutral pose)
         self.home_position = [0.0, -1.57, 0.0, -1.57, 0.0, 0.0]  # Standard UR home position
@@ -151,9 +148,18 @@ class JointTrajectoryControllerTest(Node):
         
         self.declare_parameter(
             'offset', 
-            [0.0, -1.5, 1.5, 0.0, 0.0, 0.0],
+            [0.0, -1.57, 0.0, -1.57, 0.0, 0.0],
             ParameterDescriptor(
                 description='Offset position for each joint in radians'
+            )
+        )
+        
+        # Add phase parameter for each joint
+        self.declare_parameter(
+            'phase', 
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ParameterDescriptor(
+                description='Phase offset for each joint in radians'
             )
         )
         
@@ -226,12 +232,16 @@ class JointTrajectoryControllerTest(Node):
         self.duration = self.get_parameter('duration').value
         self.active_joints = self.get_parameter('active_joints').value
         self.offset = self.get_parameter('offset').value
+        self.phase = self.get_parameter('phase').value
         self.command_topic = self.get_parameter('command_topic').value
         self.state_topic = self.get_parameter('state_topic').value
         self.publish_rate = self.get_parameter('publish_rate').value
         self.waypoints_per_trajectory = self.get_parameter('waypoints_per_trajectory').value
         self.home_position = self.get_parameter('home_position').value
         self.return_to_home_on_shutdown = self.get_parameter('return_to_home_on_shutdown').value
+        
+        # Initialize the wave generator based on the waveform type
+        self.wave_generator = get_wave_generator(self.waveform_type)
         
         # Set up parameter callback to handle dynamic parameter changes
         self.add_on_set_parameters_callback(self.parameters_callback)
@@ -274,6 +284,7 @@ class JointTrajectoryControllerTest(Node):
         self.get_logger().info(f'Duration: {self.duration} s')
         self.get_logger().info(f'Active joints: {self.active_joints}')
         self.get_logger().info(f'Offset: {self.offset}')
+        self.get_logger().info(f'Phase: {self.phase}')
         self.get_logger().info(f'Publish rate: {self.publish_rate} Hz')
         self.get_logger().info(f'Waypoints per trajectory: {self.waypoints_per_trajectory}')
         self.get_logger().info(f'Home position: {self.home_position}')
@@ -298,6 +309,8 @@ class JointTrajectoryControllerTest(Node):
             elif param.name == 'waveform_type':
                 try:
                     self.waveform_type = WaveformType(param.value)
+                    # Update the wave generator when waveform type changes
+                    self.wave_generator = get_wave_generator(self.waveform_type)
                     self.get_logger().info(f'Waveform type updated to: {self.waveform_type.value}')
                 except ValueError:
                     self.get_logger().error(f'Invalid waveform type: {param.value}')
@@ -322,6 +335,10 @@ class JointTrajectoryControllerTest(Node):
             elif param.name == 'offset':
                 self.offset = param.value
                 self.get_logger().info(f'Offset updated to: {self.offset}')
+                
+            elif param.name == 'phase':
+                self.phase = param.value
+                self.get_logger().info(f'Phase updated to: {self.phase}')
             
             elif param.name == 'publish_rate':
                 self.publish_rate = param.value
@@ -377,184 +394,39 @@ class JointTrajectoryControllerTest(Node):
         except Exception as e:
             self.get_logger().error(f'Error in joint states callback: {str(e)}')
     
-    def generate_sine_wave(self, t):
-        """Generate sine wave values for each joint based on time t."""
-        positions = []
-        velocities = []
-        accelerations = []
-        
-        for i in range(len(self.joint_names)):
-            if self.active_joints[i]:
-                # Calculate position, velocity, and acceleration for sine wave
-                pos = self.offset[i] + self.amplitude * math.sin(2 * math.pi * self.frequency * t)
-                vel = self.amplitude * 2 * math.pi * self.frequency * math.cos(2 * math.pi * self.frequency * t)
-                acc = -self.amplitude * (2 * math.pi * self.frequency)**2 * math.sin(2 * math.pi * self.frequency * t)
-            else:
-                # Use current position and zero velocity/acceleration for inactive joints
-                pos = self.current_joint_positions[i] if self.current_joint_positions else self.offset[i]
-                vel = 0.0
-                acc = 0.0
-            
-            positions.append(pos)
-            velocities.append(vel)
-            accelerations.append(acc)
-        
-        return positions, velocities, accelerations
-    
-    def generate_square_wave(self, t):
-        """Generate square wave values for each joint based on time t."""
-        positions = []
-        velocities = []
-        accelerations = []
-        
-        for i in range(len(self.joint_names)):
-            if self.active_joints[i]:
-                # Calculate square wave
-                cycle_position = (t * self.frequency) % 1.0
-                if cycle_position < 0.5:
-                    pos = self.offset[i] + self.amplitude
-                    vel = 0.0
-                    acc = 0.0
-                else:
-                    pos = self.offset[i] - self.amplitude
-                    vel = 0.0
-                    acc = 0.0
-                
-                # Add impulses at transitions for velocities and accelerations
-                transition_window = 0.02  # Small window around transitions
-                if abs(cycle_position - 0.5) < transition_window or abs(cycle_position) < transition_window or abs(cycle_position - 1.0) < transition_window:
-                    vel = 0.0
-                    acc = 0.0
-            else:
-                # Use current position and zero velocity/acceleration for inactive joints
-                pos = self.current_joint_positions[i] if self.current_joint_positions else self.offset[i]
-                vel = 0.0
-                acc = 0.0
-            
-            positions.append(pos)
-            velocities.append(vel)
-            accelerations.append(acc)
-        
-        return positions, velocities, accelerations
-    
-    def generate_triangle_wave(self, t):
-        """Generate triangle wave values for each joint based on time t."""
-        positions = []
-        velocities = []
-        accelerations = []
-        
-        for i in range(len(self.joint_names)):
-            if self.active_joints[i]:
-                # Calculate triangle wave
-                cycle_position = (t * self.frequency) % 1.0
-                
-                if cycle_position < 0.5:
-                    # Rising edge: 0 to 0.5 -> -amplitude to +amplitude
-                    pos = self.offset[i] + self.amplitude * (4 * cycle_position - 1)
-                    vel = self.amplitude * 4 * self.frequency
-                    acc = 0.0
-                else:
-                    # Falling edge: 0.5 to 1.0 -> +amplitude to -amplitude
-                    pos = self.offset[i] + self.amplitude * (3 - 4 * cycle_position)
-                    vel = -self.amplitude * 4 * self.frequency
-                    acc = 0.0
-            else:
-                # Use current position and zero velocity/acceleration for inactive joints
-                pos = self.current_joint_positions[i] if self.current_joint_positions else self.offset[i]
-                vel = 0.0
-                acc = 0.0
-            
-            positions.append(pos)
-            velocities.append(vel)
-            accelerations.append(acc)
-        
-        return positions, velocities, accelerations
-    
-    def generate_step_wave(self, t):
-        """Generate step function values for each joint based on time t."""
-        positions = []
-        velocities = []
-        accelerations = []
-        
-        # Only step once at the beginning of the test
-        for i in range(len(self.joint_names)):
-            if self.active_joints[i]:
-                if t < 0.1:
-                    # Initial position
-                    pos = self.offset[i] - self.amplitude
-                    vel = 0.0
-                    acc = 0.0
-                else:
-                    # Step to target position
-                    pos = self.offset[i] + self.amplitude
-                    vel = 0.0
-                    acc = 0.0
-            else:
-                # Use current position and zero velocity/acceleration for inactive joints
-                pos = self.current_joint_positions[i] if self.current_joint_positions else self.offset[i]
-                vel = 0.0
-                acc = 0.0
-            
-            positions.append(pos)
-            velocities.append(vel)
-            accelerations.append(acc)
-        
-        return positions, velocities, accelerations
-    
-    def generate_chirp_wave(self, t):
-        """Generate chirp wave (increasing frequency sine wave) for each joint based on time t."""
-        positions = []
-        velocities = []
-        accelerations = []
-        
-        # Define frequency that increases linearly with time
-        # Start at base_freq and increase to max_freq over test duration
-        base_freq = 0.05
-        max_freq = self.frequency * 2
-        
-        for i in range(len(self.joint_names)):
-            if self.active_joints[i]:
-                # Calculate instantaneous frequency
-                if t < self.duration:
-                    inst_freq = base_freq + (max_freq - base_freq) * (t / self.duration)
-                else:
-                    inst_freq = max_freq
-                
-                # Calculate position, velocity, and acceleration for chirp wave
-                phase = 2 * math.pi * (base_freq * t + 0.5 * (max_freq - base_freq) * (t**2) / self.duration)
-                pos = self.offset[i] + self.amplitude * math.sin(phase)
-                
-                # Calculate derivatives
-                inst_angular_freq = 2 * math.pi * inst_freq
-                vel = self.amplitude * inst_angular_freq * math.cos(phase)
-                acc = -self.amplitude * (inst_angular_freq**2) * math.sin(phase)
-            else:
-                # Use current position and zero velocity/acceleration for inactive joints
-                pos = self.current_joint_positions[i] if self.current_joint_positions else self.offset[i]
-                vel = 0.0
-                acc = 0.0
-            
-            positions.append(pos)
-            velocities.append(vel)
-            accelerations.append(acc)
-        
-        return positions, velocities, accelerations
-    
     def generate_waveform(self, t):
-        """Generate waveform values based on the selected waveform type."""
-        if self.waveform_type == WaveformType.SINE:
-            return self.generate_sine_wave(t)
-        elif self.waveform_type == WaveformType.SQUARE:
-            return self.generate_square_wave(t)
-        elif self.waveform_type == WaveformType.TRIANGLE:
-            return self.generate_triangle_wave(t)
-        elif self.waveform_type == WaveformType.STEP:
-            return self.generate_step_wave(t)
-        elif self.waveform_type == WaveformType.CHIRP:
-            return self.generate_chirp_wave(t)
-        else:
-            self.get_logger().error(f'Unknown waveform type: {self.waveform_type}')
-            return self.generate_sine_wave(t)  # Default to sine wave
+        """Generate waveform values for all joints at time t using wave generator."""
+        positions = []
+        velocities = []
+        accelerations = []
+        
+        for i in range(len(self.joint_names)):
+            if self.active_joints[i]:
+                # Get phase for this joint
+                joint_phase = self.phase[i] if i < len(self.phase) else 0.0
+                
+                # Generate waveform using the wave generator
+                pos, vel, acc = self.wave_generator.generate(
+                    t, 
+                    self.amplitude, 
+                    self.frequency, 
+                    joint_phase, 
+                    self.duration
+                )
+                
+                # Apply offset
+                pos += self.offset[i]
+            else:
+                # Use current position and zero velocity/acceleration for inactive joints
+                pos = self.current_joint_positions[i] if self.current_joint_positions else self.offset[i]
+                vel = 0.0
+                acc = 0.0
+            
+            positions.append(pos)
+            velocities.append(vel)
+            accelerations.append(acc)
+        
+        return positions, velocities, accelerations
     
     def generate_trajectory(self, t):
         """Generate a trajectory with the specified number of waypoints."""
@@ -565,6 +437,11 @@ class JointTrajectoryControllerTest(Node):
         # Time horizon for the trajectory (seconds)
         horizon = 1.0 / self.publish_rate * 2.0  # 2x the publish period
         
+        # Apply a ramp-up factor during the first second to ensure smooth start
+        # This helps transition from the robot's current position to the waveform
+        ramp_up_duration = 1.0  # seconds
+        ramp_up_factor = min(1.0, t / ramp_up_duration) if t < ramp_up_duration else 1.0
+        
         # Generate waypoints
         for i in range(self.waypoints_per_trajectory):
             # Calculate time for this waypoint
@@ -572,6 +449,23 @@ class JointTrajectoryControllerTest(Node):
             
             # Generate waveform values for this waypoint time
             positions, velocities, accelerations = self.generate_waveform(waypoint_time)
+            
+            # Apply ramp-up during the initial period to avoid tolerance violations
+            if waypoint_time < ramp_up_duration:
+                local_ramp_factor = min(1.0, waypoint_time / ramp_up_duration)
+                
+                # If we have current positions, blend from current to commanded
+                if self.current_joint_positions:
+                    for j in range(len(positions)):
+                        # Start command = current position, Target = waveform position
+                        if self.active_joints[j]:
+                            waveform_pos = positions[j]
+                            current_pos = self.current_joint_positions[j]
+                            # Linear interpolation
+                            positions[j] = current_pos + local_ramp_factor * (waveform_pos - current_pos)
+                            # Scale velocities and accelerations by ramp factor
+                            velocities[j] *= local_ramp_factor
+                            accelerations[j] *= local_ramp_factor
             
             # Create trajectory point
             point = JointTrajectoryPoint()

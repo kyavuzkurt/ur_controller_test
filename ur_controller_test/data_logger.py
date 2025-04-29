@@ -19,7 +19,7 @@ class DataLogger:
     """
     
     def __init__(self, node, active_joints, joint_names, control_mode, waveform_type, 
-                 frequency, amplitude, publish_rate):
+                 frequency, amplitude, publish_rate, joint_phases=None):
         """
         Initialize the data logger.
         
@@ -32,6 +32,7 @@ class DataLogger:
             frequency (float): Frequency of the waveform in Hz
             amplitude (float): Amplitude of the waveform
             publish_rate (float): Rate at which commands are published
+            joint_phases (list): Optional list of phase values for each joint in radians
         """
         self.node = node
         self.active_joints = active_joints
@@ -41,6 +42,7 @@ class DataLogger:
         self.frequency = frequency
         self.amplitude = amplitude
         self.publish_rate = publish_rate
+        self.joint_phases = joint_phases if joint_phases is not None else [0.0] * len(joint_names)
         
         # File handling
         self.file = None
@@ -61,6 +63,7 @@ class DataLogger:
                 headers.append(f'{joint_name}_cmd_pos')
                 headers.append(f'{joint_name}_cmd_vel')
                 headers.append(f'{joint_name}_cmd_acc')
+                headers.append(f'{joint_name}_phase')  # Add phase to headers
         
         # Add state headers for all joints
         for joint_name in self.joint_names:
@@ -100,7 +103,15 @@ class DataLogger:
                     return
         
         # Create filename based on test parameters
-        filename = f"{self.control_mode}-{self.waveform_type}-freq_{self.frequency:.2f}-amp_{self.amplitude:.2f}-pubrate_{self.publish_rate:.1f}.csv"
+        # Add a summary of phases if they're not all zero
+        phase_str = ""
+        if any(abs(phase) > 0.001 for phase in self.joint_phases):
+            # If at least one phase is non-zero, add a phase signature to the filename
+            # Use the variance of the phases as a simple signature
+            phase_variance = sum((p - sum(self.joint_phases)/len(self.joint_phases))**2 for p in self.joint_phases) / len(self.joint_phases)
+            phase_str = f"-phase_var_{phase_variance:.2f}"
+        
+        filename = f"{self.control_mode}-{self.waveform_type}-freq_{self.frequency:.2f}-amp_{self.amplitude:.2f}-pubrate_{self.publish_rate:.1f}{phase_str}.csv"
         
         # Add timestamp to ensure uniqueness
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -115,6 +126,10 @@ class DataLogger:
             self.writer.writerow(self.headers)
             
             self.node.get_logger().info(f"Data logging started: {self.log_path}")
+            
+            # Log phase information for reference
+            self.node.get_logger().info(f"Joint phases: {self.joint_phases}")
+            
         except IOError as e:
             self.node.get_logger().error(f"Failed to open log file: {str(e)}")
             self.file = None
@@ -148,6 +163,7 @@ class DataLogger:
                 row.append(cmd_positions[i])
                 row.append(cmd_velocities[i])
                 row.append(cmd_accelerations[i])
+                row.append(self.joint_phases[i])  # Add phase to logged data
         
         # Add state data for all joints
         for i in range(len(self.joint_names)):
