@@ -1,6 +1,6 @@
 # Universal Robots Controller Test
 
-This package contains test nodes for the Universal Robots controllers supported by ROS2 Hubmle.
+This package contains test nodes for the Universal Robots controllers supported by ROS2 Humble.
 
 ## Installation
 
